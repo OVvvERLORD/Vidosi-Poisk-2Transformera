@@ -12,14 +12,15 @@ class Baseline:
         '''
         self.w2v = gensim.downloader.load(w2v_model_path)
         self.svc = svc_model if  svc_model is not None else svm.SVC()
+        self._is_fitted = False
 
     def __sentence_preprocessing(self, X):
         '''
-        Не очень оопшно, но у нас есть вектор из предложений, каждое
-        предложение мы разбивааем на вектор из слов, затем каждое корректное
+        Не очень оопшно, но у нас есть вектор из промптов,
+        из которых мы разбивааем на вектор из слов, затем каждое корректное
         слово с точки зрения w2v мы закидываем в сам w2v, то есть для каждого
-        предложения мы получаем вектор из эмбеддингов для каждого допустимого
-        слова из предложения.
+        промпта ("пользовательского запроса") мы получаем вектор из эмбеддингов каждого допустимого
+        слова предложения.
         '''
         new_x = []
         for sentence in X:
@@ -36,7 +37,7 @@ class Baseline:
         '''
         Нам приходит вектор, каждый элемент которого является массивом
         эмбеддингов для какого-то предложения. Мы складываем все вектора-
-        эмбеддинги и нормализуем их, надеясь, что таким образом сохраним 
+        эмбеддинги одного предложения и нормализуем их, надеясь, что таким образом сохраним 
         смысл всего предложения. Нормализация нужна для того, чтобы мы 
         не зависили от количества слов в предложении.
         '''
@@ -50,15 +51,24 @@ class Baseline:
 
         return merged_vectors
                 
-    def fit(self, X, y):
+    def fit(self, X, y, **kwargs):
         '''
+        На вход функции fit нам приходит вектор из промптов и вектор из классов, которым эти промпты принадлежат. Возвращется
+        обученная модель, которая может предсказывать класс для нового промпта.
         '''
         X = self.__sentence_preprocessing(X)
         X = self.__vectors_merge(X)
 
+        self.svc.fit(X, y, **kwargs)
+        self._is_fitted = True
+        return self
+
     def predict(self, sentence):
         sentence = self.__sentence_preprocessing([sentence])
         sentence = self.__vectors_merge(sentence)
+
+        if not self._is_fitted:
+            raise Exception('Model is not fitted yet!')
         return self.svc.predict(sentence)
 
         
