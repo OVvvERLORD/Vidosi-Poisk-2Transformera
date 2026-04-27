@@ -27,8 +27,12 @@ class Baseline:
             words = re.findall(r'\w+', sentence)
             vectors = []
             for word in words:
-                if word.lower() in self.w2v:
-                    vectors.append(self.w2v[word])
+                low_word = word.lower()
+                if low_word in self.w2v:
+                    vectors.append(self.w2v[low_word])
+
+            if not vectors:
+                raise ValueError(f'Somewhere strange sentence was passed, which is inappropriate. Sentence: {sentence}')
             
             new_x.append(vectors)
         return new_x
@@ -64,7 +68,7 @@ class Baseline:
         return self
 
     def predict(self, sentence):
-        sentence = self.__sentence_preprocessing([sentence])
+        sentence = self.__sentence_preprocessing(sentence)
         sentence = self.__vectors_merge(sentence)
 
         if not self._is_fitted:
