@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from baseline import Baseline
 from usearch.index import Index
 from typing import Callable, Union, Literal, List, Any
 import gensim.downloader
@@ -42,58 +43,58 @@ class W2VSentenceEmbedder:
         self.w2v = gensim.downloader.load(model)
         self.vector_size = self.w2v.vector_size
 
-    def __call__(self, text: Union[str, List[str]]) -> Union[np.ndarray, List[np.ndarray]]:
+    def __call__(self, texts: List[str]) -> Union[np.ndarray, List[np.ndarray]]:
         """
         Позволяет вызывать объект как функцию: embedder("text") или embedder(["text1", "text2"])
-        """
-        if isinstance(text, str):
-            return self.embed_single(text)
-        elif isinstance(text, list):
-            return self.embed_batch(text)
+        ВАЖНО! Мы всегда ожидаем именно список из текстов, даже если текст один, его всё равно 
+        нужно обернуть в лист.
+        """ 
+        if isinstance(texts, list):
+            return self.embed(texts)
         else:
             raise TypeError("Ожидается str или List[str]")
 
-    def _preprocess(self, sentences: List[str]) -> List[List[np.ndarray]]:
-        '''
-        Не очень оопшно, но у нас есть вектор из промптов,
-        из которых мы разбивааем на вектор из слов, затем каждое корректное
-        слово с точки зрения w2v мы закидываем в сам w2v, то есть для каждого
-        промпта ("пользовательского запроса") мы получаем вектор из эмбеддингов каждого допустимого
-        слова предложения.
-        '''
-        new_x = []
-        for sentence in sentences:
-            words = re.findall(r'\w+', sentence.lower())
-            vectors = [self.w2v[word] for word in words if word in self.w2v]
-            new_x.append(vectors)
-        return new_x
+    # def _preprocess(self, sentences: List[str]) -> List[List[np.ndarray]]:
+    #     '''
+    #     Не очень оопшно, но у нас есть вектор из промптов,
+    #     из которых мы разбивааем на вектор из слов, затем каждое корректное
+    #     слово с точки зрения w2v мы закидываем в сам w2v, то есть для каждого
+    #     промпта ("пользовательского запроса") мы получаем вектор из эмбеддингов каждого допустимого
+    #     слова предложения.
+    #     '''
+    #     new_x = []
+    #     for sentence in sentences:
+    #         words = re.findall(r'\w+', sentence.lower())
+    #         vectors = [self.w2v[word] for word in words if word in self.w2v]
+    #         new_x.append(vectors)
+    #     return new_x
 
-    def _merge(self, vectors_list: List[List[np.ndarray]]) -> List[np.ndarray]:
-        '''
-        Нам приходит вектор, каждый элемент которого является массивом
-        эмбеддингов для какого-то предложения. Мы складываем все вектора-
-        эмбеддинги одного предложения и нормализуем их, надеясь, что таким образом сохраним 
-        смысл всего предложения. Нормализация нужна для того, чтобы мы 
-        не зависили от количества слов в предложении.
-        '''
-        merged = []
-        for vecs in vectors_list:
-            if not vecs:
-                merged.append(np.zeros(self.vector_size, dtype=np.float32))
-                continue
+    # def _merge(self, vectors_list: List[List[np.ndarray]]) -> List[np.ndarray]:
+    #     '''
+    #     Нам приходит вектор, каждый элемент которого является массивом
+    #     эмбеддингов для какого-то предложения. Мы складываем все вектора-
+    #     эмбеддинги одного предложения и нормализуем их, надеясь, что таким образом сохраним 
+    #     смысл всего предложения. Нормализация нужна для того, чтобы мы 
+    #     не зависили от количества слов в предложении.
+    #     '''
+    #     merged = []
+    #     for vecs in vectors_list:
+    #         if not vecs:
+    #             merged.append(np.zeros(self.vector_size, dtype=np.float32))
+    #             continue
                 
-            shared = np.sum(vecs, axis=0)
-            norm = np.linalg.norm(shared)
+    #         shared = np.sum(vecs, axis=0)
+    #         norm = np.linalg.norm(shared)
             
-            # Нормализуем и гарантируем float32 (требование usearch)
-            merged.append((shared / norm if norm > 0 else shared).astype(np.float32))
-        return merged
+    #         # Нормализуем и гарантируем float32 (требование usearch)
+    #         merged.append((shared / norm if norm > 0 else shared).astype(np.float32))
+    #     return merged
 
-    def embed_single(self, text: str) -> np.ndarray:
-        return self._merge(self._preprocess([text]))[0]
+    # def embed_single(self, text: str) -> np.ndarray:
+    #     return self._merge(self._preprocess([text]))[0]
 
-    def embed_batch(self, texts: List[str]) -> List[np.ndarray]:
-        return self._merge(self._preprocess(texts))
+    # def embed_batch(self, texts: List[str]) -> List[np.ndarray]:
+    #     return self._merge(self._preprocess(texts))
     
 class DataStorage:
     def __init__(
@@ -217,7 +218,8 @@ class DataStorage:
         texts = pending_df["caption"].tolist()
 
         for i in tqdm(range(0, len(texts), self.batch_size), desc="Эмбеддинг"):
-            batch_uids = uids[i:i+self.batch_size]
+            # batch_uids = uids[i:i+self.batch_size]
+            batch_uids = np.atleast_1d(uids[i:i+self.batch_size])
             batch_texts = texts[i:i+self.batch_size]
             
             vectors = np.array([self.embedder(t) for t in batch_texts])
@@ -263,4 +265,4 @@ class DataStorage:
         print(self.search("happy man in blue shirt", top_k=3))
 
 
-storage = DataStorage(root_dir="./EmoVid_Data")
+storage = DataStorage(root_dir=r"data/annotation_edited")
