@@ -2,12 +2,11 @@ import numpy as np
 import pandas as pd
 from usearch.index import Index
 from typing import Callable, Union, Literal, List, Any
-import gensim.downloader
 from tqdm import tqdm
+from baseline import SupportModel, W2VSentenceEmbedder
 import os
 import json
 import pathlib
-import re
 
 def _infer_embedder_dim(embedder: Any) -> int:
     """
@@ -29,71 +28,6 @@ def _infer_embedder_dim(embedder: Any) -> int:
         raise RuntimeError(f"Не удалось вывести размерность эмбеддера. Убедитесь, что он возвращает 1D numpy.ndarray. Ошибка: {e}")
 
     raise ValueError("Эмбеддер должен возвращать 1D numpy.ndarray или иметь атрибут .dim/.vector_size")
-
-
-class W2VSentenceEmbedder:
-    """
-    Эмбеддер предложений на базе Word2Vec.
-    Инкапсулирует препроцессинг, усреднение векторов слов и нормализацию.
-    Совместим с DataStorage через протокол Callable + атрибут .vector_size.
-    """
-    def __init__(self, model: str = "word2vec-google-news-300"):
-        
-        self.w2v = gensim.downloader.load(model)
-        self.vector_size = self.w2v.vector_size
-
-    def __call__(self, text: Union[str, List[str]]) -> Union[np.ndarray, List[np.ndarray]]:
-        """
-        Позволяет вызывать объект как функцию: embedder("text") или embedder(["text1", "text2"])
-        """
-        if isinstance(text, str):
-            return self.embed_single(text)
-        elif isinstance(text, list):
-            return self.embed_batch(text)
-        else:
-            raise TypeError("Ожидается str или List[str]")
-
-    def _preprocess(self, sentences: List[str]) -> List[List[np.ndarray]]:
-        '''
-        Не очень оопшно, но у нас есть вектор из промптов,
-        из которых мы разбивааем на вектор из слов, затем каждое корректное
-        слово с точки зрения w2v мы закидываем в сам w2v, то есть для каждого
-        промпта ("пользовательского запроса") мы получаем вектор из эмбеддингов каждого допустимого
-        слова предложения.
-        '''
-        new_x = []
-        for sentence in sentences:
-            words = re.findall(r'\w+', sentence.lower())
-            vectors = [self.w2v[word] for word in words if word in self.w2v]
-            new_x.append(vectors)
-        return new_x
-
-    def _merge(self, vectors_list: List[List[np.ndarray]]) -> List[np.ndarray]:
-        '''
-        Нам приходит вектор, каждый элемент которого является массивом
-        эмбеддингов для какого-то предложения. Мы складываем все вектора-
-        эмбеддинги одного предложения и нормализуем их, надеясь, что таким образом сохраним 
-        смысл всего предложения. Нормализация нужна для того, чтобы мы 
-        не зависили от количества слов в предложении.
-        '''
-        merged = []
-        for vecs in vectors_list:
-            if not vecs:
-                merged.append(np.zeros(self.vector_size, dtype=np.float32))
-                continue
-                
-            shared = np.sum(vecs, axis=0)
-            norm = np.linalg.norm(shared)
-            
-            # Нормализуем и гарантируем float32 (требование usearch)
-            merged.append((shared / norm if norm > 0 else shared).astype(np.float32))
-        return merged
-
-    def embed_single(self, text: str) -> np.ndarray:
-        return self._merge(self._preprocess([text]))[0]
-
-    def embed_batch(self, texts: List[str]) -> List[np.ndarray]:
-        return self._merge(self._preprocess(texts))
     
 class DataStorage:
     def __init__(
@@ -106,7 +40,8 @@ class DataStorage:
             batch_size: int = 64,
             connectivity: int = 16,
             expansion_add: int = 128,
-            expansion_search: int = 64
+            expansion_search: int = 64,
+            support_model : SupportModel = None
             ):
         """
         Инициализирует хранилище данных.
@@ -153,6 +88,11 @@ class DataStorage:
                 expansion_add=expansion_add,
                 expansion_search=expansion_search
             )
+
+        if support_model is None:
+            self.support_model = SupportModel()
+        else:
+            self.support_model = support_model 
 
     def scan_new(self):
         """
@@ -238,12 +178,33 @@ class DataStorage:
         return len(pending_df)
 
 
-    def search(self):
+    def search(self, prompt: str, K : int):
         """
         Выполняет поиск похожих записей по текстовому запросу.
         Преобразует запрос в вектор, ищет ближайшие соседи в индексе
         и возвращает результат в виде отфильтрованного DataFrame.
+        K - количество возвращаемых результатов.
         """
+        X = self.embedder(prompt)
+
+        probs = self.support_model.svc.predict_proba(X)
+        top_3_probs = np.argsort(probs)[-3:][::-1]
+        expected_classes = self.support_model.svc.classes_[top_3_probs]
+
+        table = pd.read_parquet(self.meta_path)
+        table = table[table['emotion'].isin(expected_classes)]
+
+        index = Index()
+        index.load(self.index_path)
+        idxs = np.setdiff1d(
+            np.array(list(index.keys), dtype = np.uint64),
+            table['usearch_uid'].to_numpy(dtype = np.uint64)
+        )
+        index.remove(idxs) 
+
+        output = index.search(X, count = K)
+        return output
+
 
     def _save_meta(self):
         """
