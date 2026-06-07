@@ -187,7 +187,7 @@ class DataStorage:
         """
         X = self.embedder(prompt)
 
-        probs = self.support_model.svc.predict_proba(X)
+        probs = self.support_model.predict_proba(prompt)
         top_3_probs = np.argsort(probs)[-3:][::-1]
         expected_classes = self.support_model.svc.classes_[top_3_probs]
 

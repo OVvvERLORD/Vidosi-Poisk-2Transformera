@@ -75,7 +75,7 @@ class SupportModel:
     vector_size: int
 
     def __init__(self, svc_model: Optional[svm.SVC] = None, w2v_model_path: str = 'word2vec-google-news-300'):
-        self.emb = gensim.downloader.load(w2v_model_path)
+        self.emb = W2VSentenceEmbedder(w2v_model_path)
         self.svc = svc_model if svc_model is not None else svm.SVC(probability=True)
         self._is_fitted = False
                 
@@ -85,15 +85,25 @@ class SupportModel:
         self._is_fitted = True
         return self
 
-    def predict(self, sentence: Union[str, List[str]]):
+    def predict(self, sentence: List[str]):
         if not self._is_fitted:
             raise Exception('Model is not fitted yet!')
+        
+        if not isinstance(sentence, list):
+            raise Exception("You have to provide a list even if you want to " \
+            "predict only one sentence. Uncomfortable, but it is what it is.")
+        
         sentence_embedded = self.emb(sentence)
         return self.svc.predict(sentence_embedded)
 
-    def predict_proba(self, sentence: Union[str, List[str]]):
+    def predict_proba(self, sentence: List[str]):
         if not self._is_fitted:
             raise Exception('Model is not fitted yet!')
+        
+        if not isinstance(sentence, list):
+            raise Exception("You have to provide a list even if you want to " \
+            "predict only one sentence. Uncomfortable, but it is what it is.")
+        
         sentence_embedded = self.emb(sentence)
         if isinstance(sentence_embedded, np.ndarray) and sentence_embedded.ndim == 1:
             sentence_embedded = sentence_embedded.reshape(1, -1)
