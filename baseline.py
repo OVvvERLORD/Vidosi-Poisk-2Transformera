@@ -1,6 +1,8 @@
 import gensim.downloader
+from gensim.models import KeyedVectors
 import numpy as np
 from sklearn import svm
+import os
 import re
 from typing import Union, Optional, List
 from sklearn.base import BaseEstimator
@@ -12,8 +14,11 @@ class W2VSentenceEmbedder:
     Совместим с DataStorage через протокол Callable + атрибут .vector_size.
     """
     def __init__(self, model: str = "word2vec-google-news-300"):
-        
-        self.w2v = gensim.downloader.load(model)
+        if os.path.exists(model):
+            self.w2v = KeyedVectors.load_word2vec_format(model, binary = True)
+        else:
+            self.w2v = gensim.downloader.load(model)
+            
         self.vector_size = self.w2v.vector_size
 
     def __call__(self, text: Union[str, List[str]]) -> Union[np.ndarray, List[np.ndarray]]:
@@ -74,8 +79,12 @@ class SupportModel:
     svc: BaseEstimator
     vector_size: int
 
-    def __init__(self, svc_model: Optional[svm.SVC] = None, w2v_model_path: str = 'word2vec-google-news-300'):
-        self.emb = W2VSentenceEmbedder(w2v_model_path)
+    def __init__(self, svc_model: Optional[svm.SVC] = None, emb_model: str | W2VSentenceEmbedder = 'word2vec-google-news-300'):
+        if isinstance(emb_model, str):
+            self.emb = W2VSentenceEmbedder(emb_model)
+        else:
+            self.emb = emb_model
+
         self.svc = svc_model if svc_model is not None else svm.SVC(probability=True)
         self._is_fitted = False
                 
