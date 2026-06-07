@@ -3,6 +3,7 @@ import numpy as np
 from sklearn import svm
 import re
 from typing import Union, Optional, List
+from sklearn.base import BaseEstimator
 
 class W2VSentenceEmbedder:
     """
@@ -69,32 +70,32 @@ class W2VSentenceEmbedder:
         return self._merge(self._preprocess(texts))
     
 class SupportModel:
-    emb : Optional['W2VSentenceEmbedder']
-    svc : 'BaseEstimator'
+    emb: 'W2VSentenceEmbedder'
+    svc: BaseEstimator
+    vector_size: int
 
-    def __init__(self, svc_model : svm.SVC | None, w2v_model_path = 'word2vec-google-news-300'):
-        '''
-        '''
-        self.w2v = gensim.downloader.load(w2v_model_path)
-        self.svc = svc_model if  svc_model is not None else svm.SVC(probability = True)
+    def __init__(self, svc_model: Optional[svm.SVC] = None, w2v_model_path: str = 'word2vec-google-news-300'):
+        self.emb = gensim.downloader.load(w2v_model_path)
+        self.svc = svc_model if svc_model is not None else svm.SVC(probability=True)
         self._is_fitted = False
                 
-    def fit(self, X, y, **kwargs):
-        '''
-        На вход функции fit нам приходит вектор из промптов и вектор из классов, которым эти промпты принадлежат. Возвращется
-        обученная модель, которая может предсказывать класс для нового промпта.
-        '''
-        X = self.emb(X)
-
-        self.svc.fit(X, y, **kwargs)
+    def fit(self, X: Union[str, List[str]], y: List, **kwargs):
+        X_embedded = self.emb(X) 
+        self.svc.fit(X_embedded, y, **kwargs)
         self._is_fitted = True
         return self
 
-    def predict(self, sentence):
-        sentence = self.emb(sentence)
-
+    def predict(self, sentence: Union[str, List[str]]):
         if not self._is_fitted:
             raise Exception('Model is not fitted yet!')
-        return self.svc.predict(sentence)
+        sentence_embedded = self.emb(sentence)
+        return self.svc.predict(sentence_embedded)
 
+    def predict_proba(self, sentence: Union[str, List[str]]):
+        if not self._is_fitted:
+            raise Exception('Model is not fitted yet!')
+        sentence_embedded = self.emb(sentence)
+        if isinstance(sentence_embedded, np.ndarray) and sentence_embedded.ndim == 1:
+            sentence_embedded = sentence_embedded.reshape(1, -1)
+        return self.svc.predict_proba(sentence_embedded)
         
