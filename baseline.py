@@ -85,8 +85,12 @@ class SupportModel:
         else:
             self.emb = emb_model
 
-        self.svc = svc_model if svc_model is not None else svm.SVC(probability=True)
         self._is_fitted = False
+        if svc_model is not None:
+            self.svc = svc_model
+            self._is_fitted = True
+        else: 
+            self.svc = svm.SVC(probability=True)
                 
     def fit(self, X: Union[str, List[str]], y: List, **kwargs):
         X_embedded = self.emb(X) 
