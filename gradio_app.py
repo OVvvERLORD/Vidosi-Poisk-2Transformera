@@ -15,7 +15,7 @@ class VideoSearchApp:
         :param root_dir: Корневая директория датасета (например, './EmoVid_Data')
         :param model_path: Путь к файлу модели joblib
         """
-        self.root_dir = os.path.abspath(root_dir)
+        self.root_dir = os.path.abspath(os.path.expanduser(root_dir))
         
         self.temp_dir = os.path.abspath(os.path.join(os.getcwd(), 'temp_muxed_videos'))
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -24,7 +24,13 @@ class VideoSearchApp:
         self.model = joblib.load(model_path)
         self.support_model = baseline.SupportModel(svc_model=self.model)
         print("Создание объекта класса DataStorage")
-        self.storage = ds.DataStorage(root_dir=self.root_dir, support_model=self.support_model)
+        self.storage = ds.DataStorage(root_dir=self.root_dir, support_model=self.support_model, embedder=self.support_model.emb)
+
+        if len(self.storage.index) == 0:
+            print("Индекс пустой, создаём базу данных с нуля...")
+            self.storage.scan_new()
+            self.storage.embed_pending()
+
         print(f"Инициализация завершена. Временные файлы будут в: {self.temp_dir}")
 
     def cleanup_old_temp_files(self, max_age_minutes: int = 5):

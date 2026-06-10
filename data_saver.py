@@ -7,6 +7,22 @@ from baseline import SupportModel, W2VSentenceEmbedder
 import os
 import json
 import pathlib
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+_META_SCHEMA = pa.schema([
+    ("usearch_uid", pa.int64()),
+    ("uid",         pa.string()),
+    ("file_path",   pa.string()),
+    ("style",       pa.string()),
+    ("emotion",     pa.string()),
+    ("caption",     pa.string()),
+    ("brightness",  pa.float64()),
+    ("colorfulness",pa.float64()),
+    ("hue",         pa.float64()),
+    ("duration",    pa.float64()),
+    ("status",      pa.string()),
+])
 
 def _infer_embedder_dim(embedder: Any) -> int:
     """
@@ -94,59 +110,112 @@ class DataStorage:
         else:
             self.support_model = support_model 
 
-    def scan_new(self):
+    def scan_new(self, batch_size: int = 5000):
         """
         Рекурсивно сканирует целевую директорию на наличие JSON-файлов.
-        Сравнивает найденные файлы с уже обработанными (по uid) и добавляет
-        только новые записи в метаданные со статусом 'pending'.
+        Новые записи (по uid) потоково дописываются на диск через ParquetWriter,
+        полная таблица в память во время сканирования НЕ загружается.
         Возвращает: int — количество успешно добавленных новых записей.
         """
-        existing_uids = set(self.df['uid'])
-        new_records = []
+    
+        if os.path.exists(self.meta_path):
+            existing_uids = set(
+                pq.read_table(self.meta_path, columns=["uid"])
+                  .column("uid").to_pylist()
+            )
+        else:
+            existing_uids = set()
 
-        json_paths = list(pathlib.Path(self.root_dir).rglob("*.json"))
-        for p in tqdm(json_paths, desc="Сканирование"):
+        def _to_float(v):
             try:
-                with open(p, 'r', encoding="utf-8") as f:
-                    raw = json.load(f)
-                
-                data = {k.strip(): v for k, v in raw.items()}
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
 
-                uid = str(data.get("video_id", p.stem)).strip()
+        def _to_str(v):
+            return v if (v is None or isinstance(v, str)) else str(v)
 
-                if uid in existing_uids:
-                    continue
+        def _write_chunked(writer, table, chunk):
+            # пишем таблицу row-group'ами фиксированного размера,
+            # чтобы будущие сканы тоже стримились дёшево
+            for off in range(0, table.num_rows, chunk):
+                writer.write_table(table.slice(off, chunk))
 
-                new_records.append({
-                    "usearch_uid": None,
-                    "uid": uid,
-                    "file_path": str(p),
-                    "style": data.get("style"),
-                    "emotion": data.get("emotion"),
-                    "caption": data.get("caption"),
-                    "brightness": data.get("brightness"),
-                    "colorfulness": data.get("colorfulness"),
-                    "hue": data.get("hue"),
-                    "duration": data.get("duration"),
-                    "status": "pending"
-                })
+        total_added = 0
+        batch = []
+        tmp_path = self.meta_path + ".tmp"
+        writer = pq.ParquetWriter(tmp_path, _META_SCHEMA, compression="zstd")
 
-            except Exception as e:
-                print(f"Ошибка {p}: {e}")
+        def _flush(rows):
+            writer.write_table(pa.Table.from_pylist(rows, schema=_META_SCHEMA))
 
-        if new_records:
-            start_id = self._next_id
-            for i, rec in enumerate(new_records):
-                rec["usearch_uid"] = start_id + i
-                self._next_id += 1
+        try:
+            if os.path.exists(self.meta_path):
+                pf = pq.ParquetFile(self.meta_path)
+                for i in range(pf.num_row_groups):
+                    rg = pf.read_row_group(i)
+                    try:
+                        rg = rg.cast(_META_SCHEMA)
+                    except Exception:
+                        d = rg.to_pandas().reindex(
+                            columns=[f.name for f in _META_SCHEMA])
+                        for c in ("brightness", "colorfulness", "hue", "duration"):
+                            d[c] = pd.to_numeric(d[c], errors="coerce")
+                        d["usearch_uid"] = pd.to_numeric(
+                            d["usearch_uid"], errors="coerce").astype("Int64")
+                        rg = pa.Table.from_pandas(
+                            d, schema=_META_SCHEMA, preserve_index=False)
+                    _write_chunked(writer, rg, batch_size)
 
-            new_df = pd.DataFrame(new_records)
-            self.df = pd.concat([self.df, new_df], ignore_index=True)
-            self._save_meta()
-            print(f"+{len(new_records)} новых записей в метаданных")
-            return len(new_records)
-        
-        return 0
+            for p in tqdm(pathlib.Path(self.root_dir).rglob("*.json"),
+                          desc="Сканирование"):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        raw = json.load(f)
+
+                    data = {k.strip(): v for k, v in raw.items()}
+                    uid = str(data.get("video_id", p.stem)).strip()
+
+                    if uid in existing_uids:
+                        continue
+
+                    batch.append({
+                        "usearch_uid": self._next_id,
+                        "uid": uid,
+                        "file_path": str(p),
+                        "style": _to_str(data.get("style")),
+                        "emotion": _to_str(data.get("emotion")),
+                        "caption": _to_str(data.get("caption")),
+                        "brightness": _to_float(data.get("brightness")),
+                        "colorfulness": _to_float(data.get("colorfulness")),
+                        "hue": _to_float(data.get("hue")),
+                        "duration": _to_float(data.get("duration")),
+                        "status": "pending",
+                    })
+                    self._next_id += 1
+                    existing_uids.add(uid)
+
+                    if len(batch) >= batch_size:
+                        _flush(batch)
+                        total_added += len(batch)
+                        batch.clear()
+
+                except Exception as e:
+                    print(f"Ошибка {p}: {e}")
+
+            if batch:
+                _flush(batch)
+                total_added += len(batch)
+                batch.clear()
+        finally:
+            writer.close()
+
+        os.replace(tmp_path, self.meta_path)
+        self.df = pd.read_parquet(self.meta_path)
+
+        if total_added:
+            print(f"+{total_added} новых записей в метаданных")
+        return total_added
 
 
     def embed_pending(self):
@@ -185,25 +254,26 @@ class DataStorage:
         и возвращает результат в виде отфильтрованного DataFrame.
         K - количество возвращаемых результатов.
         """
+        from types import SimpleNamespace
+
         X = self.embedder(prompt)
 
         probs = self.support_model.predict_proba([prompt])[0]
         top_3_probs = np.argsort(probs)[-3:][::-1]
         expected_classes = self.support_model.svc.classes_[top_3_probs]
 
-        table = pd.read_parquet(self.meta_path)
-        table = table[table['emotion'].isin(expected_classes)]
-
-        index = Index()
-        index.load(self.index_path)
-        idxs = np.setdiff1d(
-            np.array(list(index.keys), dtype = np.uint64),
-            table['usearch_uid'].to_numpy(dtype = np.uint64)
+        valid_uids = set(
+            self.df[self.df['emotion'].isin(expected_classes)]['usearch_uid']
+            .dropna().astype(np.uint64).tolist()
         )
-        index.remove(idxs) 
 
-        output = index.search(X, count = K)
-        return output
+        search_count = min(len(self.index), max(K * 5, K))
+        if search_count == 0:
+            return SimpleNamespace(keys=np.array([], dtype=np.uint64))
+
+        results = self.index.search(X, count=search_count)
+        filtered = np.array([k for k in results.keys if k in valid_uids][:K], dtype=np.uint64)
+        return SimpleNamespace(keys=filtered)
 
 
     def _save_meta(self):
